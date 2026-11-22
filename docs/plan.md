@@ -346,6 +346,7 @@ So the project centres on **large ensembles of a low-resolution strongly coupled
      - The FDT relation supplies the starting value of Q; AD then refines it for the nonlinear drift.
      - Stochastic optimals, the forcing patterns that excite the most variance, come from the emulator's Jacobian.
    - **Verification against the physics ensembles:** spread–skill ratio, rank histograms, and spectra of the predictable components, the APT and the least-damped modes, all by lead and season.
+   - **Error covariance without changing the mean:** keep the MSE emulator's forecast; add a separate tangent network trained on the physical model's JVP/VJP products (Enzyme), propagate a low-rank forecast error covariance with it, and take sensitivity patterns from its adjoint, for targeting. First emulator: an SFNO for the SpeedyWeather atmosphere under prescribed SST, in Julia. See `docs/technical.md` §6.
 5. **Targeted observations** (adaptive observing: choosing where and when to add observations such as floats, moorings, drifters, sondes or satellite sampling; then assimilating them in OSSEs to verify the forecast improvement): ΔVar from ensemble or covariance statistics (ETKF signal variance, or R(τ) in place of the TLM), validated with OSSEs. The **ocean-only adjoint** supplies interannual ocean-initial sensitivity at full ocean dimension, for siting Argo or TPOS-style observations.
 
 **AD's supporting roles** (see the design revision above):
@@ -366,6 +367,7 @@ Reactant is kept mainly for **GPU performance portability of the large ensembles
 4. **Strongly coupled covariance and predictable modes:** POP/LIM, PCA, APT and response operators, by phenomenon (registry) and season.
 5. **Targeting and OSSEs** from ensemble or covariance statistics, plus the ocean-only adjoint for ocean observations.
 6. **ML emulation** of the slow subspace with calibrated stochastic residuals, verified against phases 3–4.
+   - May start earlier, after the nature run: an SFNO atmosphere mean emulator plus a tangent network for error covariance and sensitivities, tested against the physical TLM, adjoint and ensembles (`docs/technical.md` §6.1).
 7. **AD extras as needed:**
    - Reactant ports and checks of the atmosphere and ocean. `drivers/reactant_*_check.jl` is written; it needs CUDA.jl, deferred, because Reactant compiles KernelAbstractions kernels through its CUDA extension even on CPU.
    - Short-window coupled adjoint.

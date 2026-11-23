@@ -7,8 +7,13 @@
 # Configuration: PrimitiveWet, reduced physics (no convection, constant longwave transmissivity, as in
 # drivers/reactant_atmosphere_check.jl), aquaplanet with prescribed zonal SST, perpetual equinox.
 #
+# Logs: speedy_map_check.log holds the driver's own messages, the results table and, on failure, a short
+# error summary (message head and the driver/SpeedyWeather frames). Everything else (Reactant MLIR dumps,
+# full stack traces with type parameters) goes to speedy_map_check_full.log through the redirect below.
+#
 #   mkdir -p run/speedy-map-check && cp drivers/speedy_map_check.jl run/speedy-map-check/
-#   cd run/speedy-map-check && caffeinate -i julia --project=../.. speedy_map_check.jl
+#   cd run/speedy-map-check && caffeinate -i julia --project=../.. speedy_map_check.jl > speedy_map_check_full.log 2>&1
+#   (in another terminal: tail -f run/speedy-map-check/speedy_map_check.log)
 
 #####
 ##### Settings
@@ -20,9 +25,12 @@ steps_map   = 10           # Euler Δt/2 + leapfrog Δt + 8 × 2Δt leapfrog: ad
 spinup_days = 20           # from the default initial conditions, restarting every 6 h
 npairs      = 3            # random (v, w) pairs for the dot-product test
 epsilons    = (1e-3, 1e-4, 1e-5, 1e-6, 1e-7)   # relative to the state norm, per field
-checkpoint  = 3            # Reactant.Binomial budget for the reverse pass
+eps_fine    = 10 .^ range(-9, -3, length = 25)   # linearity scan, pair 1
+checkpoint  = 3           # Reactant.Binomial budget for the reverse pass
 seed        = 1
 outfile     = "speedy_map_check.nc"
+logfile     = "speedy_map_check.log"
+fulllog     = "speedy_map_check_full.log"   # set by the shell redirect
 
 #####
 ##### Setup
@@ -33,6 +41,29 @@ using CUDA   # Reactant compiles KernelAbstractions kernels through its CUDA ext
 using PredictableOcean: provenance, settings_block
 using LinearAlgebra, NCDatasets, Printf, Random
 Reactant.set_default_backend("cpu")
+
+# Runtime patch of SpeedyWeather 0.25.0, src/parameterizations/radiation/zenith.jl:321-342. The original
+# `ifelse(ϕ * δ > 0, π, 0)` mixes an Irrational and an Int, so the result is boxed and Reactant cannot
+# raise the kernel ("failed to raise func ... solar_zenith_season_kernel"). Same arithmetic, typed as NF.
+# Remove when SpeedyWeather fixes it. Julia warns that the method is overwritten.
+@eval SpeedyWeather begin
+    @kernel inbounds = true function solar_zenith_season_kernel!(
+            cos_zenith, δ, sinδ, cosδ, sinlat, coslat, lat, whichring
+        )
+        ij = @index(Global, Linear)
+        j = whichring[ij]
+        NF = eltype(cos_zenith)
+        ϕ = lat[j]
+        h₀ = ifelse(
+            2 * (abs(δ) + abs(ϕ)) < π,                                  # polar day/night?
+            NF(acos(clamp(-tan(ϕ) * tan(δ), -one(NF), one(NF)))),        # length of day
+            ifelse(ϕ * δ > 0, NF(π), zero(NF)),                          # polar day if signs equal, else night
+        )
+        sinϕ, cosϕ = sinlat[j], coslat[j]
+        cos_zenith_j = h₀ * sinδ * sinϕ + cosδ * cosϕ * sin(h₀)
+        cos_zenith[ij] = cos_zenith_j / NF(π)
+    end
+end
 
 const FIELDS = (:vorticity, :divergence, :temperature, :humidity, :pressure)
 
@@ -69,12 +100,12 @@ function map6h!(sim)
     return sim
 end
 
-"M(Δτ)(x) on CPU from a fresh copy of the reference simulation (time restored, so evaluations agree)."
-function apply_M(sim_ref, x)
-    sim = deepcopy(sim_ref)
-    set_level1!(sim.variables, x)
-    map6h!(sim)
-    return snapshot(sim.variables)
+"M(Δτ)(x) on CPU: reset the work simulation's variables to the reference (same clock), insert x, run."
+function apply_M(sim_work, sim_ref, x)
+    SpeedyWeather.copy!(sim_work.variables, sim_ref.variables)    # dest, src: variables only, not the model
+    set_level1!(sim_work.variables, x)
+    map6h!(sim_work)
+    return snapshot(sim_work.variables)
 end
 
 # real inner product of complex spectral coefficients, summed over the fields
@@ -84,37 +115,6 @@ plus(a::Tuple, b::Tuple) = map(.+, a, b)
 minus(a::Tuple, b::Tuple) = map(.-, a, b)
 "Random direction with each field's norm equal to that field's norm in x."
 randdir(rng, x) = map(xi -> (d = randn(rng, eltype(xi), size(xi)); d .* (norm(xi) / norm(d))), x)
-
-#####
-##### Spin-up on CPU, restarting every 6 h (one process)
-#####
-
-sim_cpu = initialize!(create_model(SpeedyWeather.CPU()))
-map6h!(sim_cpu)   # first segment from the initial conditions in level 1: a fresh model has level 2 = 0
-nseg_spinup = spinup_days * 4
-t_spinup = @elapsed for _ in 1:nseg_spinup
-    set_level1!(sim_cpu.variables, snapshot(sim_cpu.variables))   # restart from the current level
-    map6h!(sim_cpu)
-end
-x0 = snapshot(sim_cpu.variables)
-set_level1!(sim_cpu.variables, x0)
-@info "spin-up" days = spinup_days t_spinup finite = all(xi -> all(isfinite, xi), x0)
-
-# timing of one 6 h map on CPU (after compilation by the spin-up)
-t_map = @elapsed y0 = apply_M(sim_cpu, x0)
-@info "one 6 h map on CPU" t_map
-
-#####
-##### Reactant: VJP of M(Δτ) at x0
-#####
-
-sim_rx = initialize!(create_model(SpeedyWeather.ReactantDevice()))
-SpeedyWeather.copy!(sim_rx.variables, sim_cpu.variables)    # dest, src
-let xr = snapshot(sim_rx.variables), d = maximum(norm.(minus(xr, x0)) ./ norm.(x0))
-    @info "CPU state copied to Reactant" max_rel_diff = d
-end
-initialize!(sim_rx; steps = steps_map)      # level 1 already holds x0 (set on CPU before the copy); clock reset, level 1 → 2, grid refresh
-vars_rx, model_rx = SpeedyWeather.unpack(sim_rx)
 
 # Differentiated map: the grid refresh from level 1 is inside, so derivatives flow through it
 function loss_map(vars, model, w, n, options)
@@ -127,53 +127,145 @@ function loss_map(vars, model, w, n, options)
     return s
 end
 
-opts = SpeedyWeather.reactant_compile_options(; raise_first = true)
-function vjp_rx(vars, model, w, n, options)
+"Compile the reverse pass once (Reactant `@compile`); returns the compiled function."
+function compile_vjp(vars, model, w, n, options, opts)
     dvars = Enzyme.make_zero(vars)
     wr = map(Reactant.to_rarray, w)
-    @jit compile_options = opts Enzyme.autodiff(Reverse, loss_map, Active,
+    return @compile compile_options = opts Enzyme.autodiff(Reverse, loss_map, Active,
         Duplicated(vars, dvars), Const(model), Const(wr), Const(n), Const(options))
+end
+
+"VJP M′ᵀw with the compiled reverse pass, on a fresh copy of the variables."
+function vjp_rx(compiled, vars, model, w, n, options)
+    v = deepcopy(vars)
+    dvars = Enzyme.make_zero(v)
+    compiled(Reverse, loss_map, Active, Duplicated(v, dvars), Const(model), Const(map(Reactant.to_rarray, w)),
+             Const(n), Const(options))
     return map(name -> copy(level(Array(field(dvars, name)), 1)), FIELDS)   # gradient w.r.t. the input level
 end
 
-rng = Xoshiro(seed)
-rows = NamedTuple[]
-t_rx = Float64[]
-for ipair in 1:npairs
-    v = randdir(rng, x0)
-    w = randdir(rng, y0)
-    push!(t_rx, @elapsed g = vjp_rx(deepcopy(vars_rx), model_rx, w, steps_map,
-                                    (; checkpointing = Reactant.Binomial(checkpoint))))
-    adj = inner(g, v)                                   # (M′ᵀw)ᵀ v
-    for ε in epsilons
-        Mv = scaled(minus(apply_M(sim_cpu, plus(x0, scaled(v, ε))),
-                          apply_M(sim_cpu, minus(x0, scaled(v, ε)))), 1 / 2ε)
-        tl = inner(w, Mv)                               # wᵀ (M′v)
-        relerr = abs(tl - adj) / abs(tl)
-        push!(rows, (; ipair, ε, tl, adj, relerr))
-        @printf("pair %d  ε = %.0e:  wᵀ(M′v) = % .10e  (M′ᵀw)ᵀv = % .10e  rel. diff %.2e\n", ipair, ε, tl, adj, relerr)
-    end
+"Driver message: one line to the readable log (flushed) and to stdout."
+function note(log, msg; kw...)
+    s = isempty(kw) ? msg : string(msg, ": ", join(("$k = $v" for (k, v) in kw), ", "))
+    println(log, s); flush(log)
+    println(stdout, s)
 end
-@info "Reactant VJP times (first includes compilation)" t_rx
+
+"Short error summary for the readable log: message head, and frames in this driver or SpeedyWeather."
+function error_summary(log, e, bt)
+    msg = sprint(showerror, e)
+    println(log, "ERROR: ", typeof(e).name.name, ": ", first(first(split(msg, '\n')), 300))
+    for fr in stacktrace(bt)
+        file = string(fr.file)
+        occursin(r"speedy_map_check|SpeedyWeather", file) || continue
+        println(log, "  at ", fr.func, "  ", replace(file, homedir() => "~"), ":", fr.line)
+    end
+    println(log, "full message and trace: ", fulllog)
+    flush(log)
+end
 
 #####
-##### Output
+##### Main
 #####
 
-isfile(outfile) && rm(outfile)
-NCDataset(outfile, "c") do ds
-    for (k, val) in provenance(; driver = abspath(@__FILE__), settings = settings_block(@__FILE__),
-                               title = "6 h map check: finite-difference JVP vs Reactant VJP, SpeedyWeather aquaplanet")
-        ds.attrib[k] = val
+function main(log)
+    # Spin-up on CPU, restarting every 6 h (one process)
+    sim_cpu = initialize!(create_model(SpeedyWeather.CPU()))
+    map6h!(sim_cpu)   # first segment from the initial conditions in level 1: a fresh model has level 2 = 0
+    t_spinup = @elapsed for _ in 1:(spinup_days * 4)
+        set_level1!(sim_cpu.variables, snapshot(sim_cpu.variables))   # restart from the current level
+        map6h!(sim_cpu)
     end
-    ds.attrib["t_spinup_s"] = t_spinup
-    ds.attrib["t_map_cpu_s"] = t_map
-    defVar(ds, "t_vjp_reactant_s", t_rx, ("pair",); attrib = Dict("long_name" => "Reactant VJP wall time (first includes compilation)"))
-    defVar(ds, "epsilon", collect(epsilons), ("eps",))
-    rel = [r.relerr for r in rows]; tl = [r.tl for r in rows]; adj = [r.adj for r in rows]
-    defVar(ds, "relerr", reshape(rel, length(epsilons), npairs), ("eps", "pair");
-           attrib = Dict("long_name" => "|wᵀ(M′v) − (M′ᵀw)ᵀv| / |wᵀ(M′v)|, M′v by finite differences"))
-    defVar(ds, "tl", reshape(tl, length(epsilons), npairs), ("eps", "pair"); attrib = Dict("long_name" => "wᵀ(M′v)"))
-    defVar(ds, "adj", reshape(adj, length(epsilons), npairs), ("eps", "pair"); attrib = Dict("long_name" => "(M′ᵀw)ᵀv"))
+    x0 = snapshot(sim_cpu.variables)
+    set_level1!(sim_cpu.variables, x0)
+    note(log, "spin-up"; days = spinup_days, t_spinup_s = round(t_spinup, digits = 2),
+         finite = all(xi -> all(isfinite, xi), x0))
+
+    # one 6 h map on CPU (after compilation by the spin-up); the work simulation is reused
+    sim_work = deepcopy(sim_cpu)
+    apply_M(sim_work, sim_cpu, x0)
+    t_map = @elapsed y0 = apply_M(sim_work, sim_cpu, x0)
+    note(log, "one 6 h map on CPU"; t_map_s = round(t_map, digits = 3))
+
+    # numerical determinism: the same input twice must give bit-identical output
+    y0b = apply_M(sim_work, sim_cpu, x0)
+    note(log, "determinism, M(x0) twice"; identical = all(map(==, y0, y0b)),
+         max_rel_diff = maximum(norm.(minus(y0, y0b)) ./ norm.(y0)), threads = Threads.nthreads())
+
+    # Reactant: VJP of M(Δτ) at x0
+    sim_rx = initialize!(create_model(SpeedyWeather.ReactantDevice()))
+    SpeedyWeather.copy!(sim_rx.variables, sim_cpu.variables)    # dest, src
+    let xr = snapshot(sim_rx.variables)
+        note(log, "CPU state copied to Reactant"; max_rel_diff = maximum(norm.(minus(xr, x0)) ./ norm.(x0)))
+    end
+    initialize!(sim_rx; steps = steps_map)      # level 1 already holds x0 (set on CPU before the copy); clock reset, level 1 → 2, grid refresh
+    vars_rx, model_rx = SpeedyWeather.unpack(sim_rx)
+    opts = SpeedyWeather.reactant_compile_options(; raise_first = true)
+
+    rng = Xoshiro(seed)
+    rows = NamedTuple[]
+    t_rx = Float64[]
+    options = (; checkpointing = Reactant.Binomial(checkpoint))
+    note(log, "compiling the Reactant reverse pass")
+    t_compile = @elapsed compiled = compile_vjp(deepcopy(vars_rx), model_rx, randdir(rng, y0), steps_map, options, opts)
+    note(log, "compiled"; t_compile_s = round(t_compile, digits = 1))
+    v1 = w1 = nothing
+    for ipair in 1:npairs
+        v = randdir(rng, x0)
+        w = randdir(rng, y0)
+        ipair == 1 && (v1 = v; w1 = w)
+        push!(t_rx, @elapsed g = vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options))
+        note(log, "pair $ipair: VJP done"; t_s = round(t_rx[end], digits = 2))
+        adj = inner(g, v)                                   # (M′ᵀw)ᵀ v
+        for ε in epsilons
+            Mv = scaled(minus(apply_M(sim_work, sim_cpu, plus(x0, scaled(v, ε))),
+                              apply_M(sim_work, sim_cpu, minus(x0, scaled(v, ε)))), 1 / 2ε)
+            tl = inner(w, Mv)                               # wᵀ (M′v)
+            relerr = abs(tl - adj) / abs(tl)
+            push!(rows, (; ipair, ε, tl, adj, relerr))
+            note(log, @sprintf("pair %d  ε = %.0e:  wᵀ(M′v) = % .10e  (M′ᵀw)ᵀv = % .10e  rel. diff %.2e",
+                               ipair, ε, tl, adj, relerr))
+        end
+    end
+
+    # linearity: finite differences of wᵀM along v for pair 1 on a fine ε grid. A smooth map gives a
+    # plateau (truncation error ∝ ε² above it, roundoff ∝ 1/ε below); kinks from physics switches give scatter.
+    tl_fine = map(eps_fine) do ε
+        inner(w1, scaled(minus(apply_M(sim_work, sim_cpu, plus(x0, scaled(v1, ε))),
+                               apply_M(sim_work, sim_cpu, minus(x0, scaled(v1, ε)))), 1 / 2ε))
+    end
+    for (ε, tl) in zip(eps_fine, tl_fine)
+        note(log, @sprintf("linearity, pair 1  ε = %.2e:  wᵀ(M′v) = % .10e", ε, tl))
+    end
+
+    # Output
+    isfile(outfile) && rm(outfile)
+    NCDataset(outfile, "c") do ds
+        for (k, val) in provenance(; driver = abspath(@__FILE__), settings = settings_block(@__FILE__),
+                                   title = "6 h map check: finite-difference JVP vs Reactant VJP, SpeedyWeather aquaplanet")
+            ds.attrib[k] = val
+        end
+        ds.attrib["t_spinup_s"] = t_spinup
+        ds.attrib["t_map_cpu_s"] = t_map
+        defVar(ds, "t_vjp_reactant_s", t_rx, ("pair",); attrib = Dict("long_name" => "Reactant VJP wall time (first includes compilation)"))
+        defVar(ds, "epsilon", collect(epsilons), ("eps",))
+        rel = [r.relerr for r in rows]; tl = [r.tl for r in rows]; adj = [r.adj for r in rows]
+        defVar(ds, "relerr", reshape(rel, length(epsilons), npairs), ("eps", "pair");
+               attrib = Dict("long_name" => "|wᵀ(M′v) − (M′ᵀw)ᵀv| / |wᵀ(M′v)|, M′v by finite differences"))
+        defVar(ds, "tl", reshape(tl, length(epsilons), npairs), ("eps", "pair"); attrib = Dict("long_name" => "wᵀ(M′v)"))
+        defVar(ds, "adj", reshape(adj, length(epsilons), npairs), ("eps", "pair"); attrib = Dict("long_name" => "(M′ᵀw)ᵀv"))
+        ds.attrib["t_compile_reactant_s"] = t_compile
+        defVar(ds, "epsilon_fine", collect(eps_fine), ("eps_fine",))
+        defVar(ds, "tl_fine", tl_fine, ("eps_fine",); attrib = Dict("long_name" => "wᵀ(M′v) by finite differences, pair 1"))
+    end
+    note(log, "wrote $outfile")
 end
-@info "wrote $outfile"
+
+open(logfile, "w") do log
+    try
+        main(log)
+    catch e
+        error_summary(log, e, catch_backtrace())
+        rethrow()      # full message and trace go to stderr, i.e. the full log
+    end
+end

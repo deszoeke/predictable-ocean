@@ -157,6 +157,19 @@ function apply_M(sim, vars_ref, x, z0)
     return snapshot(sim.variables)
 end
 
+"Diagnostic: wall time of 3 bare 6 h maps (map6h! only) and 3 full apply_M (copy! of the variables + map)."
+function time_maps(log, label, sim, vars_ref, x, z0)
+    reset_vars!(sim, vars_ref, x, z0)
+    t_bare = @elapsed for _ in 1:3
+        map6h!(sim, steps_map)
+    end
+    t_full = @elapsed for _ in 1:3
+        apply_M(sim, vars_ref, x, z0)
+    end
+    note(log, label; t_bare_map_s = round(t_bare / 3, digits = 3), t_apply_M_s = round(t_full / 3, digits = 3),
+         julia_threads = Threads.nthreads(), cpu_threads = Sys.CPU_THREADS)
+end
+
 "JVP M′v by centred differences at step ε (σ-RMS units, v has unit σ-RMS)."
 jvp_fd(sim, vars_ref, x, z0, v, ε) =
     scaled(minus(apply_M(sim, vars_ref, plus(x, scaled(v, ε)), z0),
@@ -313,9 +326,12 @@ function main(log)
     sim = initialize!(create_model(SpeedyWeather.CPU(); truncation, nlayers))
     map6h!(sim, steps_map)
     vars_ref = deepcopy(sim.variables)
+    x_t, z0_t = snapshot(sim.variables), Float64.(vec(Array(roughness(sim))))
+    time_maps(log, "CPU map timing before Reactant", sim, vars_ref, x_t, z0_t)
 
     # Reactant simulation; compile the reverse pass once, at the first state of the first year
     sim_rx = initialize!(create_model(SpeedyWeather.ReactantDevice(); truncation, nlayers))
+    time_maps(log, "CPU map timing after the Reactant simulation is set up", sim, vars_ref, x_t, z0_t)
     opts = SpeedyWeather.reactant_compile_options(; raise_first = true)
     options = (; checkpointing = Reactant.Binomial(checkpoint))
     compiled = nothing
@@ -379,6 +395,7 @@ function main(log)
                 note(log, "compiling the Reactant reverse pass")
                 t_compile = @elapsed compiled = compile_vjp(deepcopy(vars_rx), model_rx, ws[1][1], steps_map, options, opts)
                 note(log, "compiled"; t_compile_s = round(t_compile, digits = 1))
+                time_maps(log, "CPU map timing after the compile", sim, vars_ref, x_t, z0_t)
             end
             t_vjp += @elapsed MTws = [vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options, sim.model.planet.radius) for (w, _) in ws]
 

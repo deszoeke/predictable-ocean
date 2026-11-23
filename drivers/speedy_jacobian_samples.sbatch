@@ -18,7 +18,7 @@
 #SBATCH --job-name=speedy-jacobian
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=8     # 1 Julia thread; the rest for Reactant/XLA's own thread pool
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm-%A_%a.out

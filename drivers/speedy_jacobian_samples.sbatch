@@ -22,7 +22,7 @@
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm-%A_%a.out
-##SBATCH --partition=CHANGE_ME
+#SBATCH --partition=ceoas-lowprio
 ##SBATCH --account=CHANGE_ME
 
 set -euo pipefail

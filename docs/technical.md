@@ -401,14 +401,19 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
 ### 7.3 Pipeline (drivers write NetCDF; separate jobs can run concurrently)
 1. **Derivative check** (`drivers/speedy_map_check.jl`; written 2026-11-22; 0.06 s per 6 h map on the Mac; 40 years of nature run is about 1 h): build M(Δτ); time one 6 h map on CPU; ε scan for the JVP; dot-product test against the Reactant VJP; Reactant compile time and memory.
 2. **Nature run** (`drivers/speedy_nature_run.jl`): spin-up, then decades of 6-hourly spectral prognostic snapshots (vorticity, divergence, temperature, humidity, log surface pressure), one NetCDF file per year, with the date for the forcing. Done on the Mac: 50 years; years 1–10 are spin-up (top-layer drift), so data years are 11–50. Split: train 11–40 (43 800 one-step pairs), validate 41–45, test 46–50.
+   - **If the nature run is ever redone:** compute the R2 Jacobian samples inline. Every 4 days, branch the ensemble members off the live trajectory 2 days earlier and compute the forward (JVP) and reverse (VJP) products on the spot. This removes the file reads and the Float32 rounding, and z₀ comes from the live model. The cost is a longer nature job plus one Reactant compile (about 330 s) at its start.
 3. **R2, Jacobian samples** (`drivers/speedy_jacobian_samples.jl`, CPU, Mac or HPC)
    - **States:** x_k every 4 days in years 11–40, about 2 700 states. Each is read from the Float32 nature file with its z₀ and stepped in Float64.
    - **Tangent directions v (4 per state):**
      - 2 grown directions: differences of members of a 4-member ensemble started 2 days earlier from small random perturbations, rescaled. These are columns of X(τ), the directions that make up Σ.
      - 2 random directions with each field's climatological spectrum.
    - **Cotangent directions w (4 per state):** random, with each field's climatological spectrum. Metric gradients z can be added later.
-   - **JVP M′v:** centred differences at ε = 1e-9 (relative), 2 maps each. **VJP M′ᵀw:** Reactant reverse pass, compiled once.
-   - **Output:** one file per year, Float32: x, z₀, M(x), v, M′v, w and M′ᵀw. A dot-product check at a few states per year goes to the log.
+   - **Units (decided 2026-11-23):** each direction is rescaled by a single scalar (field ratios kept) to unit σ-RMS, sqrt(Σ_f ‖d_f‖²/σ_f² / Σ_f N_f), with σ_f the climatological RMS anomaly of field f (from every 10th day of years 11–40). The scalars are stored.
+   - **JVP M′v:** centred differences at ε = 1e-8 in σ-RMS units, 2 maps each; a linearity check (ε vs 10ε and ε/10) every 10th state. **VJP M′ᵀw:** Reactant reverse pass, compiled once.
+   - **z₀:** the map is M(x, z₀) with z₀ the roughness stored with x, a fixed input (not differentiated) in both the JVP and the VJP. The grown-direction ensemble carries z₀ on, as the nature run does.
+   - **Reactant input per state:** set up on CPU (reset the variables, x into level 1, z₀, `initialize!(sim; steps = 10)`), then `copy!` into the Reactant simulation.
+   - **Dot-product test:** the full 4 × 4 wⱼᵀ(M′vᵢ) against (M′ᵀwⱼ)ᵀvᵢ at every state, free from the stored products.
+   - **Output:** one file per year, Float32: x, z₀, M(x), v, M′v, w, M′ᵀw, the 4 × 4 tl and adj, the linearity ratios, σ_f and the climatological spectra. Years are independent: one job, or a Slurm array of 6 tasks of 5 years (`drivers/speedy_jacobian_samples.sbatch`).
    - **Cost:** about 5 s per state (ensemble 2 s, JVPs 0.5 s, VJPs 2.2 s), so about 4 h and about 7 GB.
 4. **R3, physics test ensembles** (`drivers/speedy_ensembles.jl`, CPU)
    - **Starts:** 40, every 45 days in the test years 46–50.

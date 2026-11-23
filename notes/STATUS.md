@@ -82,6 +82,7 @@ _Last updated 2026-11-23._
   - the top layer (σ = 0.017) warms from 318.6 K in year 1 to 330.6 K by year 10, then holds at 330.5–330.8 K. So years 1–10 count as spin-up.
 
 ## Next
+- **R2 driver written, untested** (`drivers/speedy_jacobian_samples.jl` + `.sbatch`): smoke test, then run on HPC CPU (one job or `--array=0-5`) once the nature run is copied.
 - **Emulator track:** the training runs R2–R4 of `docs/technical.md` §7.3 (Jacobian samples, physics test ensembles, SFNO training). For the HPC nature rerun, use `NATURE_SPINUP_DAYS=3650`. At T31 a CPU core suffices: 40 years take about 1 h, so a GPU is not needed.
 
 Coupled track:

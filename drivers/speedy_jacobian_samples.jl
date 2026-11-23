@@ -200,19 +200,27 @@ function compile_vjp(vars, model, w, n, options, opts)
         Duplicated(vars, dvars), Const(model), Const(wr), Const(n), Const(options))
 end
 
-"VJP M′ᵀw with the compiled reverse pass, on a fresh copy of the variables."
-function vjp_rx(compiled, vars, model, w, n, options)
+"""
+VJP M′ᵀw with the compiled reverse pass, on a fresh copy of the variables, in physical units.
+`initialize!` scales vorticity and divergence by the radius R (all time levels), so the reverse pass sees
+x̃ = S x and ỹ = S y, S = R for vor and div, 1 otherwise, and returns S⁻¹ M′ᵀ S w̃. Passing w̃ = S⁻¹ w and
+multiplying the result by S gives M′ᵀw, matching the finite-difference JVP (which `run!` unscales).
+"""
+function vjp_rx(compiled, vars, model, w, n, options, R)
+    S = map(name -> name in (:vorticity, :divergence) ? R : one(R), FIELDS)
     v = deepcopy(vars)
     dvars = Enzyme.make_zero(v)
-    compiled(Reverse, loss_map, Active, Duplicated(v, dvars), Const(model), Const(map(Reactant.to_rarray, w)),
+    compiled(Reverse, loss_map, Active, Duplicated(v, dvars), Const(model), Const(map((wi, s) -> Reactant.to_rarray(wi ./ s), w, S)),
              Const(n), Const(options))
-    return map(name -> copy(level(Array(field(dvars, name)), 1)), FIELDS)   # gradient w.r.t. the input level
+    return map((name, s) -> s .* level(Array(field(dvars, name)), 1), FIELDS, S)   # gradient w.r.t. the input level
 end
 
 "Load (x, z₀) into the Reactant simulation: set up on CPU (reset, level 1, roughness, initialize!), then copy!."
 function load_rx!(sim_rx, sim, vars_ref, x, z0)
     reset_vars!(sim, vars_ref, x, z0)
-    initialize!(sim; steps = steps_map)                 # clock reset, level 1 → 2, grid refresh, on CPU
+    initialize!(sim; steps = steps_map)                 # clock reset, radius scaling of vor/div, level 1 → 2, grid refresh, on CPU
+    sim.variables.prognostic.scale[] == sim.model.planet.radius ||
+        error("expected vor/div scaled by the radius after initialize!, got scale = $(sim.variables.prognostic.scale[])")
     SpeedyWeather.copy!(sim_rx.variables, sim.variables)   # dest, src
     return sim_rx
 end
@@ -372,7 +380,7 @@ function main(log)
                 t_compile = @elapsed compiled = compile_vjp(deepcopy(vars_rx), model_rx, ws[1][1], steps_map, options, opts)
                 note(log, "compiled"; t_compile_s = round(t_compile, digits = 1))
             end
-            t_vjp += @elapsed MTws = [vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options) for (w, _) in ws]
+            t_vjp += @elapsed MTws = [vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options, sim.model.planet.radius) for (w, _) in ws]
 
             # 4 × 4 dot-product test
             for i in 1:nv, j in 1:nw

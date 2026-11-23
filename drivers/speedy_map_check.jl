@@ -80,13 +80,18 @@ function compile_vjp(vars, model, w, n, options, opts)
         Duplicated(vars, dvars), Const(model), Const(wr), Const(n), Const(options))
 end
 
-"VJP M′ᵀw with the compiled reverse pass, on a fresh copy of the variables."
-function vjp_rx(compiled, vars, model, w, n, options)
+"""
+VJP M′ᵀw with the compiled reverse pass, on a fresh copy of the variables, in physical units.
+`initialize!` scales vor and div by the radius R, so the reverse pass returns S⁻¹M′ᵀS w̃ (S = R for vor and
+div, 1 otherwise); passing w̃ = S⁻¹w and multiplying by S gives M′ᵀw (corrected 2026-11-23, docs/technical.md §7.2).
+"""
+function vjp_rx(compiled, vars, model, w, n, options, R)
+    S = map(name -> name in (:vorticity, :divergence) ? R : one(R), FIELDS)
     v = deepcopy(vars)
     dvars = Enzyme.make_zero(v)
-    compiled(Reverse, loss_map, Active, Duplicated(v, dvars), Const(model), Const(map(Reactant.to_rarray, w)),
+    compiled(Reverse, loss_map, Active, Duplicated(v, dvars), Const(model), Const(map((wi, s) -> Reactant.to_rarray(wi ./ s), w, S)),
              Const(n), Const(options))
-    return map(name -> copy(level(Array(field(dvars, name)), 1)), FIELDS)   # gradient w.r.t. the input level
+    return map((name, s) -> s .* level(Array(field(dvars, name)), 1), FIELDS, S)   # gradient w.r.t. the input level
 end
 
 #####
@@ -139,7 +144,7 @@ function main(log)
         v = randdir(rng, x0)
         w = randdir(rng, y0)
         ipair == 1 && (v1 = v; w1 = w)
-        push!(t_rx, @elapsed g = vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options))
+        push!(t_rx, @elapsed g = vjp_rx(compiled, vars_rx, model_rx, w, steps_map, options, sim_cpu.model.planet.radius))
         note(log, "pair $ipair: VJP done"; t_s = round(t_rx[end], digits = 2))
         adj = inner(g, v)                                   # (M′ᵀw)ᵀ v
         for ε in epsilons

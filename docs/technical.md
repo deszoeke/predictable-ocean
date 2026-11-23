@@ -429,6 +429,12 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
    - **Length and output:** 30 days, saving X(τ) every 6 h to day 5, then daily.
    - **Use:** Σ(τ) in both phases, finite-time growth and saturation, the reference for the §6.6 tests. Adjoints z for a metric J are added later.
    - **Cost:** about 3 h and about 11 GB.
+   - **Driver decisions (2026-11-23):**
+     - start k at nature day (k − 1)·45 from the start of year 46; x and z₀ are read from the nature file, and z₀ is carried by the model after the first map;
+     - member 0 is an unperturbed control run from the same Float32 x, so spread about the control has no storage-rounding offset;
+     - members 1–40 start from x + δ, where δ is a climatological-spectrum draw rescaled by one scalar to σ-RMS 1e-3, with σ from every 10th day of years 11–40 (as in R2);
+     - X(τ) is saved at lead 0, every 6 h to day 5, then daily to day 30: 46 leads, one Float32 file per start (about 0.27 GB);
+     - Slurm array of 8 tasks × 5 starts (`drivers/speedy_ensembles.sbatch`), 2 CPUs (no Reactant), about 11 min per start on the HPC (41 members × 120 maps × 0.13 s).
 5. **R4, SFNO and training** (`src/emulator/`, `drivers/train_emulator.jl`, HPC GPU)
    - **Implementation:** SFNO in Lux. Spherical-harmonic transforms are written as precomputed Legendre matrices plus FFT, so the network runs on GPU and is differentiable. First ask upstream-scout whether a Julia SFNO exists.
    - **Stage A:** one-step values only. This is also the "no derivative loss" emulator of §6.8.

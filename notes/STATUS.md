@@ -86,6 +86,7 @@ _Last updated 2026-11-23._
   - the smoke test passed on the HPC (2026-11-23, `brizo01`): dot test 1e-5 after the radius-scaling fix, 8.5 s per state with 8 CPUs;
   - the full run was submitted as `--array=0-5` (about 1.3 h per task);
   - 2 CPUs were 15× slower because of thread contention (`docs/technical.md` §7.3).
+- **R3, physics test ensembles:** the driver is written but untested (`drivers/speedy_ensembles.jl` + `.sbatch`). The map-check driver is corrected for the radius scaling and is awaiting a rerun.
 - **Emulator track:** the training runs R2–R4 of `docs/technical.md` §7.3 (Jacobian samples, physics test ensembles, SFNO training). For the HPC nature rerun, use `NATURE_SPINUP_DAYS=3650`. At T31 a CPU core suffices: 40 years take about 1 h, so a GPU is not needed.
 
 Coupled track:

@@ -38,7 +38,7 @@ _Last updated 2026-11-23._
 
 - Phase 2 (tag `phase2-regrid-done`; all work now on `main`):
   - coupled smoke test passes (`run/coupled-smoke/`);
-  - regridding weights extracted, checked (transpose 4e-15, constant-preserving, identical to `ConservativeRegridding.regrid!`) and saved (`run/regrid-weights/`), through the `PredictableOceanCoupledExt` extension.
+  - regridding weights extracted, checked (transpose 4e-15, constant-preserving, identical to `ConservativeRegridding.regrid!`) and saved (`assets/`), through the `PredictableOceanCoupledExt` extension.
 - Reactant checks pass against finite differences:
   - **ocean:** Oceananigans on a LatitudeLongitudeGrid with buoyancy and Coriolis, 1e-12 (`run/reactant-ocean/`);
   - **atmosphere:** SpeedyWeather PrimitiveWet T32L8 Float64, 3e-8 (`run/reactant-atmosphere/`).

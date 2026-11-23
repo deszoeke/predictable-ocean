@@ -2,7 +2,7 @@
 # grid) from the coupled model, check them, and save them to NetCDF. Saved weights become
 # constant sparse operators in a Reactant-compiled coupled step (docs/plan.md phase 4).
 #
-#   mkdir -p run/regrid-weights && cp drivers/regrid_weights.jl run/regrid-weights/
+#   mkdir -p run/regrid-weights && cp drivers/regrid_weights.jl run/regrid-weights/   (then mv *.nc ../../assets/)
 #   cd run/regrid-weights && caffeinate -i julia --project=../.. regrid_weights.jl
 
 #####

@@ -1,8 +1,8 @@
 # Run directories: track each run's driver copy (its settings), ignore output, checkpoints, logs.
-/run/*
-!/run/*/
-/run/*/*
-!/run/*/*.jl
+/run/**
+!/run/**/
+!/run/**/*.jl
+/assets/
 
 # Data and figures
 *.nc

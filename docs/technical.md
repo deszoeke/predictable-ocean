@@ -383,9 +383,9 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
 ### 7.1 The 6 h map M(Δτ)
 - SpeedyWeather steps with leapfrog: x(t + Δt) depends on two time levels, x(t) and x(t − Δt). The emulator sees one snapshot every Δτ = 6 h = 9 steps of Δt = 40 min.
 - **Definition:** M(Δτ)(x) = start from the single level x with a forward-Euler first step, then leapfrog to 6 h. This is an exact function of one snapshot, and the Euler start also removes the leapfrog computational mode.
-- **Restart in-process** (SpeedyWeather 0.24.1 source; recheck in 0.25): copy prognostic time level 2 (current) into level 1, then reinitialize the time stepping (`initialize!(sim; steps = 10)`, which recomputes no model constants). The next 10 steps are an Euler half step Δt/2, a leapfrog step Δt, then filtered leapfrog steps 2Δt; together they advance 9Δt = 6 h. The date carries across restarts. Caveat (found 2026-11-22): a freshly initialized model holds its initial conditions in level 1 and zeros in level 2, so the first segment must run without the 2 → 1 copy.
-- **Hidden state (found 2026-11-22):** the surface momentum roughness z₀ (`vars.parameterizations.momentum_roughness`, grid space, Charnock-type over the ocean) is computed in one step and used in the next, so it carries across the restart: strictly the map is M(Δτ)(x, z₀). Resuming without it changed year 3 by up to 10⁻³ (relative). The nature run stores z₀ after every map, and the restart file holds it, so resume is bit-identical. Open choice for the emulator: take z₀ as an input, or redefine M to recompute z₀ from x at each restart.
-- **Nature run:** one continuous process. Every 6 h it writes the snapshot (when due) and restarts the leapfrog from that single level with an Euler step, without stopping. So the nature run, the training targets and the Jacobian products all come from the same map M(Δτ).
+- **Euler step in-process** (SpeedyWeather 0.24.1 source; recheck in 0.25): copy prognostic time level 2 (current) into level 1, then reinitialize the time stepping (`initialize!(sim; steps = 10)`, which recomputes no model constants). The next 10 steps are an Euler half step Δt/2, a leapfrog step Δt, then filtered leapfrog steps 2Δt; together they advance 9Δt = 6 h. The date carries across restarts. Caveat (found 2026-11-22): a freshly initialized model holds its initial conditions in level 1 and zeros in level 2, so the first segment must run without the 2 → 1 copy.
+- **Hidden state (found 2026-11-22):** the surface momentum roughness z₀ (`vars.parameterizations.momentum_roughness`, grid space, Charnock-type over the ocean) is computed in one step and used in the next, so it carries across the 6-hourly Euler step: strictly the map is M(Δτ)(x, z₀). The carry is in `LearnedWindSlowdown` (`use_computed_roughness = true` by default), which uses the previous step's z₀. Resuming without it changed year 3 by up to 10⁻³ (relative). The nature run stores z₀ after every map, and the restart file holds it, so resume is bit-identical. **Size** (`drivers/speedy_z0_check.jl`, year 11, 20 states): the z₀ part of the 6 h change, relative to the change, is 3e-5 for vor, T, q and lnps and 2.4e-4 for div with z₀ recomputed from x, and 1e-4 to 1.7e-3 with fixed z₀. This is negligible, so M̂ takes x only. **Nature rerun:** set `use_computed_roughness = false`, so no z₀ carries between steps and M depends on x only.
+- **Nature run:** one continuous process. Every 6 h it writes the snapshot (when due) and takes the Euler step: the leapfrog starts again from that single level, without stopping. So the nature run, the training targets and the Jacobian products all come from the same map M(Δτ).
 
 ### 7.2 Jacobian products
 - **Adjoint products (VJPs), M′ᵀ w:** Reactant reverse mode, as verified in `drivers/reactant_atmosphere_check.jl`.
@@ -399,7 +399,28 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
 - **Check:** the dot-product test wᵀ(M′ v) = (M′ᵀ w)ᵀ v for random v, w, to near the finite-difference truncation error.
 
 ### 7.3 Pipeline (drivers write NetCDF; separate jobs can run concurrently)
-1. **Derivative check** (`drivers/speedy_map_check.jl`; written 2026-11-22; a CPU smoke test gave 0.28 s per 6 h map on the Mac, so 40 years of nature run is about 4.5 h): build M(Δτ); time one 6 h map on CPU; ε scan for the JVP; dot-product test against the Reactant VJP; Reactant compile time and memory.
-2. **Nature run** (`drivers/speedy_nature_run.jl`): spin-up, then decades of 6-hourly spectral prognostic snapshots (vorticity, divergence, temperature, humidity, log surface pressure), one NetCDF file per year, with the date for the forcing.
-3. **Jacobian samples** (`drivers/speedy_jacobian_samples.jl`): reads finished years; at sampled states, directions v from short perturbed ensembles plus random vectors; writes (x, v, M′ v) and (x, w, M′ᵀ w). Runs alongside step 2.
-4. **SFNO and training** (`src/emulator/`, `drivers/train_emulator.jl`): GPU job, after enough years exist; held-out years for testing.
+1. **Derivative check** (`drivers/speedy_map_check.jl`; written 2026-11-22; 0.06 s per 6 h map on the Mac; 40 years of nature run is about 1 h): build M(Δτ); time one 6 h map on CPU; ε scan for the JVP; dot-product test against the Reactant VJP; Reactant compile time and memory.
+2. **Nature run** (`drivers/speedy_nature_run.jl`): spin-up, then decades of 6-hourly spectral prognostic snapshots (vorticity, divergence, temperature, humidity, log surface pressure), one NetCDF file per year, with the date for the forcing. Done on the Mac: 50 years; years 1–10 are spin-up (top-layer drift), so data years are 11–50. Split: train 11–40 (43 800 one-step pairs), validate 41–45, test 46–50.
+3. **R2, Jacobian samples** (`drivers/speedy_jacobian_samples.jl`, CPU, Mac or HPC)
+   - **States:** x_k every 4 days in years 11–40, about 2 700 states. Each is read from the Float32 nature file with its z₀ and stepped in Float64.
+   - **Tangent directions v (4 per state):**
+     - 2 grown directions: differences of members of a 4-member ensemble started 2 days earlier from small random perturbations, rescaled. These are columns of X(τ), the directions that make up Σ.
+     - 2 random directions with each field's climatological spectrum.
+   - **Cotangent directions w (4 per state):** random, with each field's climatological spectrum. Metric gradients z can be added later.
+   - **JVP M′v:** centred differences at ε = 1e-9 (relative), 2 maps each. **VJP M′ᵀw:** Reactant reverse pass, compiled once.
+   - **Output:** one file per year, Float32: x, z₀, M(x), v, M′v, w and M′ᵀw. A dot-product check at a few states per year goes to the log.
+   - **Cost:** about 5 s per state (ensemble 2 s, JVPs 0.5 s, VJPs 2.2 s), so about 4 h and about 7 GB.
+4. **R3, physics test ensembles** (`drivers/speedy_ensembles.jl`, CPU)
+   - **Starts:** 40, every 45 days in the test years 46–50.
+   - **Members:** K = 40, initial perturbations random with the climatological spectrum at 1e-3 of the climatological standard deviation.
+   - **Length and output:** 30 days, saving X(τ) every 6 h to day 5, then daily.
+   - **Use:** Σ(τ) in both phases, finite-time growth and saturation, the reference for the §6.6 tests. Adjoints z for a metric J are added later.
+   - **Cost:** about 3 h and about 11 GB.
+5. **R4, SFNO and training** (`src/emulator/`, `drivers/train_emulator.jl`, HPC GPU)
+   - **Implementation:** SFNO in Lux. Spherical-harmonic transforms are written as precomputed Legendre matrices plus FFT, so the network runs on GPU and is differentiable. First ask upstream-scout whether a Julia SFNO exists.
+   - **Stage A:** one-step values only. This is also the "no derivative loss" emulator of §6.8.
+   - **Stage B:** values plus JVP and VJP losses (the reference emulator of §6.8). It needs nested AD (Jacobian products of the network inside the loss).
+   - **Evaluation:** on R3 with the §6.6 tests.
+   - **Installs:** Lux, Optimisers and LuxCUDA (ask first).
+
+R2 and R3 need only the nature run and can run concurrently on the Mac now; R4 waits for the network code.

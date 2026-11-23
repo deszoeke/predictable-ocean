@@ -1,7 +1,7 @@
 # Nature run for the emulator experiment (docs/technical.md §7.3, step 2), SpeedyWeather 0.25:
 #   - atmosphere-only aquaplanet, the same model and 6 h map M(Δτ) as drivers/speedy_map_check.jl
-#     (shared code in drivers/speedy_aquaplanet.jl): every 6 h the leapfrog restarts from the single
-#     current snapshot with an Euler step, in one continuous process;
+#     (shared code in drivers/speedy_aquaplanet.jl): every 6 h an Euler step starts the leapfrog from the single
+#     current snapshot, in one continuous process;
 #   - spin-up (not written), then one NetCDF file per model year, nature_T31L8-aqua_yNNNN.nc, holding the
 #     6-hourly spectral prognostic snapshots (vorticity, divergence, temperature, humidity, log surface
 #     pressure). Each file is written under a .tmp name and renamed when complete, so a concurrent reader
@@ -81,7 +81,7 @@ store!(buf::AbstractArray{<:Any, 2}, xi, i) = (buf[:, i] .= xi; buf)
 function run_year!(sim, x, bufs, z0buf, year, steps)
     nmaps = size(bufs[1], ndims(bufs[1]))
     for i in 1:nmaps
-        set_level1!(sim.variables, x)    # restart from the current snapshot
+        set_level1!(sim.variables, x)    # Euler step from the current snapshot
         map6h!(sim, steps)
         x = snapshot(sim.variables)
         all(xi -> all(isfinite, xi), x) || error("non-finite state in year $year, map $i")
@@ -187,7 +187,7 @@ function main(log)
         map6h!(sim, steps_map)   # first segment from the initial conditions in level 1: a fresh model has level 2 = 0
         x = snapshot(sim.variables)
         t_spinup = @elapsed for _ in 1:(spinup_days * 4)
-            set_level1!(sim.variables, x)   # restart from the current snapshot
+            set_level1!(sim.variables, x)   # Euler step from the current snapshot
             map6h!(sim, steps_map)
             x = snapshot(sim.variables)
         end
@@ -205,7 +205,7 @@ function main(log)
     merge!(base, Dict{String, Any}("nyears" => nyears, "maps_per_year" => maps_per_year, "days_per_year" => days_per_year,
         "spinup_days" => spinup_days, "steps_map" => steps_map, "dt_minutes" => dt_minutes, "store_type" => string(store_type),
         "config" => config, "truncation" => truncation, "nlayers" => nlayers,
-        "map" => "M(6 h): restart the leapfrog from the single snapshot with an Euler step, then run steps_map steps (9 dt = 6 h)"))
+        "map" => "M(6 h): an Euler step from the single snapshot starts the leapfrog, then run steps_map steps (9 dt = 6 h)"))
     for year in (years_done + 1):nyears
         t_year = @elapsed x = run_year!(sim, x, bufs, z0buf, year, steps_map)
         scale = sim.variables.prognostic.scale[]

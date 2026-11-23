@@ -61,7 +61,7 @@ function set_level1!(vars, x)
     return vars
 end
 
-"One 6 h map on a CPU simulation, in place: restart from the snapshot in level 1, then run `steps` steps."
+"One 6 h map on a CPU simulation, in place: an Euler step from the snapshot in level 1 starts the leapfrog, then run `steps` steps."
 function map6h!(sim, steps = 10)
     run!(sim; steps)      # initialize! (clock reset, level 1 → 2, grid refresh) + time stepping
     return sim

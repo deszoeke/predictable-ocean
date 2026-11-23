@@ -1,6 +1,6 @@
 # Status
 
-_Last updated 2026-11-15._
+_Last updated 2026-11-23._
 
 ## Done
 - Plan adopted (`docs/plan.md`).
@@ -65,10 +65,35 @@ _Last updated 2026-11-15._
   - check against a few 10-year ensembles. Caveat: AMOC and decadal ocean physics at 2°.
 - **Literature:** `docs/novelty.md` (assessment) and `docs/references.md` (56 AMS-style references with DOIs). Consensus thread: https://consensus.app/search/literature-review-to-assess-the-novelty-of-a-plann/uihD0upqS4-DK0PLLx3Jsg/ . The Elicit connector is unavailable (no API access on the plan).
 
+- **Emulator experiment docs:** `docs/technical.md` §6 (covariance, adjoint sensitivity, targeting, what an emulator must supply, §6.8 withholding experiment) and §7 (6 h map, derivatives, pipeline). `notes/reading_list.md`.
+- **SpeedyWeather 0.25:** NumericalEarth pinned to main 83e1c68 for 0.25 compatibility. Return to a release ≥ 0.9.5 when one is out.
+- **6 h map check** (`drivers/speedy_map_check.jl`, `run/speedy-map-check/`):
+  - the map is bit-deterministic;
+  - 0.06 s per map on Mac CPU;
+  - the Reactant reverse pass compiles in 326 s and takes 0.54 s per VJP;
+  - finite-difference JVPs are linear only for ε ≲ 3e-9, because physics switches flip at larger ε;
+  - the dot-product test agrees to 1%, attributed to kinks at q = 0 and q = q_sat (not yet confirmed);
+  - the zenith kernel is patched at runtime (Irrational/Int `ifelse` failed to raise in Reactant).
+- **z₀ is hidden state:** momentum roughness carries across the 6 h restart, so the map is M(x, z₀). z₀ is stored per map in the nature run and in the restart file. Resuming is bit-identical.
+- **Aquaplanet nature run on Mac** (`drivers/speedy_nature_run.jl`, `run/speedy-nature/`):
+  - T31L8, 2-year spin-up, then 40 years: 0.06 s per map, about 87 s per year, 8.7 GB;
+  - years 41–50 done from the restart file (2026-11-23): top 330.4–330.8 K, bottom 291.8–292.0 K; 50 files, 11 GB;
+  - the bottom-layer global-mean T is steady at 291.9 K;
+  - the top layer (σ = 0.017) warms from 318.6 K in year 1 to 330.6 K by year 10, then holds at 330.5–330.8 K. So years 1–10 count as spin-up.
+
 ## Next
+- **Emulator track:** the training runs R2–R4 of `docs/technical.md` §7.3 (Jacobian samples, physics test ensembles, SFNO training). For the HPC nature rerun, use `NATURE_SPINUP_DAYS=3650`. At T31 a CPU core suffices: 40 years take about 1 h, so a GPU is not needed.
+
+Coupled track:
 1. A timing study: atmosphere and ocean cost per step; a longer coupled Δt with the atmosphere sub-stepped; thread scaling; later GPU. Then a multi-decade low-resolution coupled nature run.
 2. Realism checks for the Tier 1 phenomena in the nature run.
 3. Large ensembles, then the covariance and predictable modes.
 
 ## Open questions
 - Unpin Julia 1.11 and move to 1.12 or 1.13? Criterion 3 is met; waiting for the user's decision.
+- z₀ in the emulator (measured 2026-11-23, drivers/speedy_z0_check.jl, year 11, 20 states): the z₀ part of the 6 h change, relative to the change, is 3e-5 (vor, T, q, lnps) and 2.4e-4 (div) with z₀ recomputed from x; 2e-4 and 1.7e-3 with fixed z₀. Negligible: M̂ sees x only. A nature-run rerun sets `use_computed_roughness = false` (LearnedWindSlowdown), so no z₀ carries between steps and M depends on x only.
+- Training data (decided 2026-11-23): the Mac nature run is canonical; the user copies it to the HPC.
+- JVP training targets: finite differences (1% error) or VJP only?
+- Confirm the kink explanation with one-sided differences and one field at a time.
+- Report the zenith-kernel bug upstream? (Ask the user.)
+- Rerun the package tests, the coupled smoke test and the Reactant atmosphere check after the 0.25 upgrade.

@@ -1,5 +1,5 @@
 # Check of the 6 h map M(Δτ) of the emulator experiment (docs/technical.md §7), SpeedyWeather 0.25:
-#   - M(Δτ)(x): restart the leapfrog from the single snapshot x (Euler start), run 9Δt = 6 h;
+#   - M(Δτ)(x): Euler step from the single snapshot x starts the leapfrog, run 9Δt = 6 h;
 #   - JVPs M′v by centred finite differences on CPU (Float64), scanned over ε;
 #   - VJPs M′ᵀw by Reactant reverse mode;
 #   - dot-product test wᵀ(M′v) = (M′ᵀw)ᵀv for a few random (v, w);
@@ -22,7 +22,7 @@
 truncation  = 32           # SpeedyWeather's 32 = classic T31; Δt = 40 min
 nlayers     = 8
 steps_map   = 10           # Euler Δt/2 + leapfrog Δt + 8 × 2Δt leapfrog: advances 9Δt = 6 h
-spinup_days = 20           # from the default initial conditions, restarting every 6 h
+spinup_days = 20           # from the default initial conditions, with an Euler step every 6 h
 npairs      = 3            # random (v, w) pairs for the dot-product test
 epsilons    = (1e-3, 1e-4, 1e-5, 1e-6, 1e-7)   # relative to the state norm, per field
 eps_fine    = 10 .^ range(-9, -3, length = 25)   # linearity scan, pair 1
@@ -94,11 +94,11 @@ end
 #####
 
 function main(log)
-    # Spin-up on CPU, restarting every 6 h (one process)
+    # Spin-up on CPU, Euler step every 6 h (one process)
     sim_cpu = initialize!(create_model(SpeedyWeather.CPU(); truncation, nlayers))
     map6h!(sim_cpu, steps_map)   # first segment from the initial conditions in level 1: a fresh model has level 2 = 0
     t_spinup = @elapsed for _ in 1:(spinup_days * 4)
-        set_level1!(sim_cpu.variables, snapshot(sim_cpu.variables))   # restart from the current level
+        set_level1!(sim_cpu.variables, snapshot(sim_cpu.variables))   # Euler step from the current level
         map6h!(sim_cpu, steps_map)
     end
     x0 = snapshot(sim_cpu.variables)

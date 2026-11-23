@@ -72,7 +72,7 @@ _Last updated 2026-11-23._
   - 0.06 s per map on Mac CPU;
   - the Reactant reverse pass compiles in 326 s and takes 0.54 s per VJP;
   - finite-difference JVPs are linear only for ε ≲ 3e-9, because physics switches flip at larger ε;
-  - the dot-product test agrees to 1%, attributed to kinks at q = 0 and q = q_sat (not yet confirmed);
+  - the dot-product test agrees to 1%, first attributed to kinks at q = 0 and q = q_sat. Revised 2026-11-23: the more likely cause is the radius scaling of vor and div in the reverse pass, fixed in R2, which now agrees to 1e-5 (`docs/technical.md` §7.2);
   - the zenith kernel is patched at runtime (Irrational/Int `ifelse` failed to raise in Reactant).
 - **z₀ is hidden state:** momentum roughness carries across the 6 h restart, so the map is M(x, z₀). z₀ is stored per map in the nature run and in the restart file. Resuming is bit-identical.
 - **Aquaplanet nature run on Mac** (`drivers/speedy_nature_run.jl`, `run/speedy-nature/`):
@@ -82,7 +82,10 @@ _Last updated 2026-11-23._
   - the top layer (σ = 0.017) warms from 318.6 K in year 1 to 330.6 K by year 10, then holds at 330.5–330.8 K. So years 1–10 count as spin-up.
 
 ## Next
-- **R2 driver written, untested** (`drivers/speedy_jacobian_samples.jl` + `.sbatch`): smoke test, then run on HPC CPU (one job or `--array=0-5`) once the nature run is copied.
+- **R2, Jacobian samples** (`drivers/speedy_jacobian_samples.jl` + `.sbatch`):
+  - the smoke test passed on the HPC (2026-11-23, `brizo01`): dot test 1e-5 after the radius-scaling fix, 8.5 s per state with 8 CPUs;
+  - the full run was submitted as `--array=0-5` (about 1.3 h per task);
+  - 2 CPUs were 15× slower because of thread contention (`docs/technical.md` §7.3).
 - **Emulator track:** the training runs R2–R4 of `docs/technical.md` §7.3 (Jacobian samples, physics test ensembles, SFNO training). For the HPC nature rerun, use `NATURE_SPINUP_DAYS=3650`. At T31 a CPU core suffices: 40 years take about 1 h, so a GPU is not needed.
 
 Coupled track:
@@ -94,7 +97,7 @@ Coupled track:
 - Unpin Julia 1.11 and move to 1.12 or 1.13? Criterion 3 is met; waiting for the user's decision.
 - z₀ in the emulator (measured 2026-11-23, drivers/speedy_z0_check.jl, year 11, 20 states): the z₀ part of the 6 h change, relative to the change, is 3e-5 (vor, T, q, lnps) and 2.4e-4 (div) with z₀ recomputed from x; 2e-4 and 1.7e-3 with fixed z₀. Negligible: M̂ sees x only. A nature-run rerun sets `use_computed_roughness = false` (LearnedWindSlowdown), so no z₀ carries between steps and M depends on x only.
 - Training data (decided 2026-11-23): the Mac nature run is canonical; the user copies it to the HPC.
-- JVP training targets: finite differences (1% error) or VJP only?
-- Confirm the kink explanation with one-sided differences and one field at a time.
+- JVP training targets: the finite-difference JVPs agree with the VJPs to 1e-5 (R2 smoke test), so both can be used.
+- Rerun the map check with the radius-scaling correction, to confirm that it removes the 1%.
 - Report the zenith-kernel bug upstream? (Ask the user.)
 - Rerun the package tests, the coupled smoke test and the Reactant atmosphere check after the 0.25 upgrade.

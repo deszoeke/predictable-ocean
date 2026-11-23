@@ -396,6 +396,7 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
   - the Reactant reverse pass compiles once in 326 s; each VJP then takes 0.54 s (about 7 forward maps). `@jit` re-traced every call (26 s); use `@compile` once;
   - **linearity:** finite differences of wᵀM along v change by a factor 2 between ε = 10⁻³ and 10⁻⁵ and scatter at 10⁻⁶–10⁻⁷ (physics switches flipping somewhere in the domain); they reach a plateau (10⁻⁵ relative) only for ε ≲ 3 × 10⁻⁹. Finite-difference JVPs must use ε ≈ 10⁻⁹ (ε relative to each field's norm);
   - on the plateau the Reactant VJP differs from finite differences by 1% (−4.839 × 10⁴ vs −4.789 × 10⁴). Likely cause: grid points that sit exactly on a kink, such as humidity clipped to exactly 0 (positive definite) or set exactly to saturation. There central differences return the mean of the two one-sided slopes at any ε, while AD takes one branch. Accepted for now; the training data use AD throughout, so they are consistent. To confirm later: forward vs backward differences at ε = 10⁻⁹, and the test one field at a time.
+  - **Revised 2026-11-23:** the kink explanation is probably wrong. `initialize!` scales vorticity and divergence by the radius R in all time levels (`scale_prognostic!`), so the reverse pass works in x̃ = S x, ỹ = S y (S = R for vor and div, 1 otherwise) and returns S⁻¹M′ᵀS w, while `run!` unscales the finite-difference JVP. The blocks coupling vor/div to the other fields are off by R^±1. The map check's per-field-norm directions gave vor and div only a tiny share of the dot products, which would explain why the error came out as only 1%. With the correction (pass S⁻¹w, multiply the result by S) and σ-unit directions, R2 gives a dot-product agreement of 6e-6 to 9e-6 over all fields. The map check itself has not been rerun with the correction.
 - **Check:** the dot-product test wᵀ(M′ v) = (M′ᵀ w)ᵀ v for random v, w, to near the finite-difference truncation error.
 
 ### 7.3 Pipeline (drivers write NetCDF; separate jobs can run concurrently)
@@ -412,9 +413,16 @@ Decisions (2026-11-22): SpeedyWeather 0.25.0, with NumericalEarth pinned to its 
    - **JVP M′v:** centred differences at ε = 1e-8 in σ-RMS units, 2 maps each; a linearity check (ε vs 10ε and ε/10) every 10th state. **VJP M′ᵀw:** Reactant reverse pass, compiled once.
    - **z₀:** the map is M(x, z₀) with z₀ the roughness stored with x, a fixed input (not differentiated) in both the JVP and the VJP. The grown-direction ensemble carries z₀ on, as the nature run does.
    - **Reactant input per state:** set up on CPU (reset the variables, x into level 1, z₀, `initialize!(sim; steps = 10)`), then `copy!` into the Reactant simulation.
+   - **Radius scaling:** the VJP is returned in physical units: w_vor and w_div are divided by R before the reverse pass, and those gradient components are multiplied by R after it (see §7.2, "Revised 2026-11-23"). The driver checks that the scale factor is R after `initialize!`.
    - **Dot-product test:** the full 4 × 4 wⱼᵀ(M′vᵢ) against (M′ᵀwⱼ)ᵀvᵢ at every state, free from the stored products.
    - **Output:** one file per year, Float32: x, z₀, M(x), v, M′v, w, M′ᵀw, the 4 × 4 tl and adj, the linearity ratios, σ_f and the climatological spectra. Years are independent: one job, or a Slurm array of 6 tasks of 5 years (`drivers/speedy_jacobian_samples.sbatch`).
-   - **Cost:** about 5 s per state (ensemble 2 s, JVPs 0.5 s, VJPs 2.2 s), so about 4 h and about 7 GB.
+   - **Cost:** estimated at about 5 s per state, so about 4 h and about 7 GB.
+   - **Smoke test (2026-11-23, HPC `brizo01`, AMD EPYC 9654, 1 Julia thread, 8 CPUs):**
+     - 8.5 s per state: ensemble about 5 s, M and the JVPs about 2 s, 4 VJPs about 2.4 s each;
+     - one 6 h map takes 0.13 s; the Reactant compile takes 250–290 s;
+     - dot test 6e-6 to 9e-6; JVP linearity 2e-5 (10ε) and 2.6e-4 (ε/10, roundoff); nature consistency 1.4e-5 to 2.4e-5 of the 6 h change (Float32 rounding of x and z₀).
+     - **Give each job at least 8 CPUs (4 physical cores).** With `--cpus-per-task=2` (one physical core plus its hyperthread), Reactant/XLA's threads competed with the Julia thread, and each CPU map took about 2.8 s instead of 0.13 s, about 125 s per state.
+     - Full run: about 13 min per year, so about 1.3 h per 5-year array task.
 4. **R3, physics test ensembles** (`drivers/speedy_ensembles.jl`, CPU)
    - **Starts:** 40, every 45 days in the test years 46–50.
    - **Members:** K = 40, initial perturbations random with the climatological spectrum at 1e-3 of the climatological standard deviation.

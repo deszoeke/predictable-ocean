@@ -23,6 +23,7 @@ One symbol per quantity; time dependence is always an argument in parentheses (n
 | Symbol | Meaning |
 |---|---|
 | x | anomaly state vector (departure from the nature run's seasonal climatology) |
+| x_clim(t) | the nature run's seasonal climatology at time t; the full model state is x_clim(t) + x |
 | x_k | ensemble member k = 1 … K; x̄ is the ensemble mean (average of x_k over k); x′_k = x_k − x̄ |
 | ⟨·⟩ | an average; always stated "over t" (in the nature run) or "over k" (over members) |
 | ᵀ | transpose |
@@ -39,9 +40,9 @@ One symbol per quantity; time dependence is always an argument in parentheses (n
 | Symbol | Meaning |
 |---|---|
 | S(τ) | signal covariance: covariance over starts t of the ensemble means x̄(t+τ). C(0) = ⟨Σ(τ; t)⟩ over t + S(τ) |
-| M(τ) | the forecast map: the nonlinear model run for lead τ |
+| M(τ) | the forecast map, written on anomalies: M(τ)(x) = (model run for lead τ from the full state x_clim(t) + x) − x_clim(t + τ). The model itself steps full states; differences between states, and the Jacobian M′, are the same for full states and anomalies |
 | M′(τ) | tangent-linear propagator (Jacobian of M along a trajectory); M′(τ)ᵀ is the adjoint |
-| M̂(Δτ), x̂ | ML mean emulator; x̂(τ) its forecast from x̂(0) = x̄(0) (§6) |
+| M̂(Δτ), M̂′, x̂ | ML one-step emulator of M (nonlinear); its Jacobian; its single forecast from x̂(0) = x̄(0) (§6) |
 | T(x) | tangent network, T(x) ≈ M′(Δτ; x) (§6) |
 | X(τ) | d × K scaled member deviations [x′_1 … x′_K]/√(K − 1), so Σ(τ) = X(τ) X(τ)ᵀ (§6) |
 | z | adjoint (cotangent) vector, as in z(0) = M′(τ)ᵀ z(τ) |
@@ -254,7 +255,7 @@ Because the atmosphere adjusts quickly, f ≈ −A_ff⁻¹ A_fs s + noise. Subst
 This is Hasselmann's stochastic climate model, made formal (Mori–Zwanzig, or method 8). It is mainly for **interpretation**: it separates the predictability created by coupled feedback (in L_eff) from the noise that limits it, and identifies which atmospheric patterns matter.
 
 ## 6. Forecast error covariance, sensitivity and targeting, and what an ML emulator must supply (2026-11-22)
-This section derives, in the linear regime, how forecast errors grow, how sensitive a forecast metric is to the state at an earlier time, and how much one observation reduces the metric's error variance. Then it says what an emulator must supply to do the same. Symbols are those of the notation table; the ones new here are defined in §6.1.
+This section derives how forecast errors grow (linearly, then to saturation), how sensitive a forecast metric is to the state at an earlier time, and how much one observation reduces the metric's error variance. Then it says what an emulator must supply to do the same. Symbols are those of the notation table; the ones new here are defined in §6.1.
 
 ### 6.1 Symbols
 | Symbol | Meaning |
@@ -275,11 +276,13 @@ This section derives, in the linear regime, how forecast errors grow, how sensit
 | z(τ) | adjoint vector (sensitivity) ∂J/∂x(τ) |
 | y, H, R | observations at τ_o, y = H x(τ_o) + ε, with observation error ε of covariance R |
 | Y | p × K matrix H X(τ_o): observed deviations |
-| M̂(Δτ), x̂(τ) | ML mean emulator; its forecast from the ensemble-mean start, x̂(0) = x̄(0) |
+| M̂(Δτ) | ML emulator of M(Δτ): a nonlinear network for one step, rolled out step by step |
+| M̂′(Δτ; x) | Jacobian of M̂(Δτ) about x |
+| x̂(τ) | single emulator forecast from the ensemble-mean start, x̂(0) = x̄(0) |
 | T(x) | tangent network, trained so that T(x) ≈ M′(Δτ; x) |
 
 ### 6.2 Linear propagation of forecast errors
-Each member obeys x_k(τ + Δτ) = M(Δτ)(x_k(τ)). Expanding about the ensemble mean,
+Each member obeys x_k(τ + Δτ) = M(Δτ)(x_k(τ)), with M written on anomalies (notation table): the model steps the full state x_clim + x_k. Expanding about the ensemble mean,
 
 x_k(τ + Δτ) = M(Δτ)(x̄(τ)) + M′(Δτ; x̄(τ)) x′_k(τ) + O(|x′|²).
 
@@ -291,6 +294,8 @@ Averaging over k removes the linear term (the deviations sum to zero), so x̄(τ
 
 - Valid while the O(|x′|²) terms are negligible: about 1–2 weeks for the atmosphere.
 - There is no added-noise term. The model is perfect and deterministic, so all spread comes from Σ(0).
+
+**Saturation.** Beyond the linear window the members decorrelate, still each a realistic state on the model's attractor. The ensemble mean relaxes to the climatological mean, x̄(τ) → 0 (x is an anomaly), and the spread saturates at the climate covariance, Σ(τ) → C(0). This comes from the nonlinear M; the linear propagation (2) has no saturation and grows without bound. Predictability at long leads is the part of x̄(τ) that has not yet relaxed, and the part of C(0) − Σ(τ) that has not yet closed (the signal S(τ)).
 
 ### 6.3 Three propagators
 1. **M′(τ, 0):** the exact Jacobian along x̄. Flow-dependent; acts on any direction.
@@ -321,38 +326,53 @@ Observe y = H x(τ_o) + ε at τ_o. In the linear regime, the least-squares (Kal
 
 - For one observation of a variable hᵀx: ΔVar J = (hᵀ X(τ_o) j)² / (hᵀ Σ(τ_o) h + R). Observe where the error covariance with J is large compared with the observed variable's total variance.
 - **Targeting** chooses H (where and what) and τ_o (when) to maximize ΔVar J (Bishop et al. 2001).
+- **Beyond the linear window.** (6) needs only X(τ_o) and j, the member deviations, not M′. From a nonlinear ensemble it is the least-squares regression of J on y across members, and stays meaningful past the linear window while that regression is close to linear. The adjoint form (5) does not, because it needs M′.
 
 ### 6.6 What an emulator must supply
-Equations (1)–(6) need K physics members, or Jacobian products of the physics along x̄. An emulator must supply three things:
-1. **The linearization state.** x̂(τ + Δτ) = M̂(Δτ)(x̂(τ)), from x̂(0) = x̄(0). Because x̄(τ) = M(τ)(x̄(0)) + O(|x′|²), x̂ ≈ x̄ in the linear regime if M̂ ≈ M.
-2. **The error patterns X(τ)** by (1), which needs M′ about x̂.
-3. **The adjoint z(τ)** by (5), which needs M′ᵀ.
+An emulator replaces the physics ensemble with K runs of M̂ from the same K initial states. Each run is a nonlinear trajectory. The ensemble is right if:
+1. **early growth is right**, M̂′ ≈ M′, so that (1)–(2) hold with M̂′ in the linear window;
+2. **saturation is right**, Σ(τ) → C(0), so the emulator's climate matches the physics.
 
-An ensemble of emulator runs uses the emulator's own Jacobian M̂′ in place of M′.
-- **Known failure:** M̂′ is too contractive (Selz & Craig 2023; Bonavita 2024). Then X, Σ, j and ΔVar are too small, and the patterns are wrong.
+Then X(τ), j and (6) come from the emulator ensemble at all leads. The adjoint z(τ) of (5), in the linear window, needs M′ᵀ along a single trajectory, x̂ ≈ x̄ (from x̄(τ) = M(τ)(x̄(0)) + O(|x′|²)).
+
+- **Known failure:** M̂′ is too contractive (Selz & Craig 2023; Bonavita 2024). Then X, Σ, j and ΔVar are too small and the patterns wrong. A single deterministic forecast of such an emulator, run long, blurs toward climatology; a good emulator ensemble keeps realistic members and saturates. Stochastic emulators (GenCast, AIFS-CRPS) are built to do that.
 - **Why it happens:** a deterministic model's next state is a deterministic function of its full current state, so a one-step MSE fit to full model states can in principle learn M. Damping comes from targets that the inputs do not determine:
   - training data that lack small scales (analyses);
   - multi-step losses at leads beyond the predictability limit, where the MSE optimum is the smooth conditional mean;
   - networks' bias toward large scales.
-  Whether an SFNO trained one step at a time on SpeedyWeather states damps is a testable question here.
 
-**The tangent network** supplies 2 and 3 without changing x̂:
-- **Use:** X(τ + Δτ) = T(x̂(τ)) X(τ), and z(τ − Δτ) = T(x̂(τ − Δτ))ᵀ z(τ).
-- **Training data:** from the physics ensembles. Inputs: a state x_k(τ), its forcing, and a direction v (the columns of X(τ), the directions that make up Σ). Targets: M′ v and M′ᵀ v, computed with Enzyme. The nonlinear change of x′_k over Δτ comes free and tests (1).
-- **Caveat:** x̂ is smoother than physics states, so T is used outside its training distribution. Remedy: add linearizations of the physics about x̂ to the training data.
-- **Perfect-model tests:**
-  - T against M′: leading singular values and vectors over 1–5 days, and finite-time Lyapunov exponents;
-  - X(τ) against the physics ensemble;
-  - z against Enzyme adjoints of the physics;
-  - ΔVar J against OSSEs.
+**Training M̂ on values and derivatives.** Add Jacobian products to the one-step loss: inputs a state x_k(τ), its forcing, and a direction v (columns of X(τ), the directions that make up Σ); targets M(Δτ)(x_k), M′ v and M′ᵀ v, computed with Enzyme. This constrains M̂′ ≈ M′ along the attractor, which is what sets error growth. Then M̂′ supplies the adjoint directly.
+
+**Tangent network T ≈ M′** (fallback): a separate network trained on the same Jacobian products, used if M̂ itself cannot be made to match M′. Use: X(τ + Δτ) = T(x̂(τ)) X(τ), z(τ − Δτ) = T(x̂(τ − Δτ))ᵀ z(τ). Caveat: x̂ may be smoother than physics states, so add linearizations about x̂ to its training data.
+
+**Perfect-model tests** for any emulator, against the physics:
+- one-step error, and Jacobian error ‖M̂′ v − M′ v‖;
+- leading singular values and vectors over 1–5 days, and finite-time Lyapunov exponents;
+- ensemble spread Σ(τ) in both phases, and the climate C(0);
+- z against Enzyme adjoints of the physics; ΔVar J against OSSEs.
 
 ### 6.7 First implementation
-- **Networks:** both are spherical Fourier neural operators (SFNO; Bonev et al. 2023), whose convolutions act on spherical-harmonic coefficients, like SpeedyWeather.
+- **Network:** M̂ (and T, if needed) is a spherical Fourier neural operator (SFNO; Bonev et al. 2023), whose convolutions act on spherical-harmonic coefficients, like SpeedyWeather.
 - **Configuration:** atmosphere only, SST prescribed from the nature run, T31 with 8 levels, Δτ = 6 h.
   - Variables: vorticity, divergence, temperature, humidity, log surface pressure.
   - Training data: about 10⁵ six-hourly states from decades of nature run.
 - **Software:** Julia (Lux.jl, SpeedyTransforms, Enzyme, Reactant).
 - **Timing (open):** after the nature run (phase 2), alongside the ensembles (phase 3).
 - **Later:** the emulated atmosphere coupled to the physical Oceananigans ocean.
+
+### 6.8 Experiment: which emulator deficiencies bias predictability and targeting
+In this perfect-model setting M is known, with its derivatives. So:
+1. **Reference emulator:** train M̂ one step at a time on full states, values plus Jacobian products (§6.6). Check that it reproduces the physics statistics: one-step and Jacobian errors, Lyapunov exponents, Σ(τ) in both phases, and C(0). Trajectories still diverge after the predictability time; the target is statistics, not trajectories.
+2. **Degraded emulators,** each mimicking a known cause:
+   - no derivative loss (one-step values only);
+   - multi-step MSE loss out to lead L, for L below and beyond the predictability time;
+   - withheld state: truncated spectrum (T21 from T31, like analyses without small scales) or dropped variables or levels. The withheld part becomes hidden dynamics, so a deterministic M̂ cannot be exact: it needs noise or memory (§5, method 8);
+   - noisy training inputs (analysis error);
+   - less data or a smaller network.
+3. **Measure, for each emulator against the physics ensembles:** the diagnostics of §6.6; the predictability estimates (predictable components, average predictability time, §5); and the targeting quantities z, ensemble sensitivity and ΔVar J.
+
+Result: a map from each deficiency to its bias in spread, in estimated predictability, and in targeting. In particular, whether under-dispersion makes an emulator overstate predictability (Selz & Craig 2023).
+
+Costs: each training sample stores a state plus a few Jacobian products, several times the storage of states alone. Start with the atmosphere under prescribed SST.
 
 References: `notes/reading_list.md`.

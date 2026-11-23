@@ -11,6 +11,7 @@ SpeedyWeather = "9e226e20-d153-4fed-8a5b-493def4f21a9"
 
 [sources]
 PredictableOcean = {path = "PredictableOcean"}
+NumericalEarth = {url = "https://github.com/NumericalEarth/NumericalEarth.jl", rev = "83e1c68e185cc8e5f1fd4fc553153b4aff7a811c"}  # main with SpeedyWeather 0.25 compat (#963); return to a release (>= 0.9.5) when out
 
 [compat]
 julia = "~1.11"
